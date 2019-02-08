@@ -18,6 +18,7 @@ import ShareLink from './components/ShareLink'
 import Balance from "./components/Balance";
 import Ruler from "./components/Ruler";
 import Receipt from "./components/Receipt";
+import CashOut from "./components/CashOut";
 import MainCard from './components/MainCard';
 import History from './components/History';
 import Advanced from './components/Advanced';
@@ -29,6 +30,7 @@ import Vendors from './components/Vendors';
 import RecentTransactions from './components/RecentTransactions';
 import Footer from './components/Footer';
 import Loader from './components/Loader';
+import burnerlogo from './burnerwallet.png';
 import BurnWallet from './components/BurnWallet'
 import Exchange from './components/Exchange'
 import Bottom from './components/Bottom';
@@ -56,7 +58,8 @@ let ERC20TOKEN
 let ERC20VENDOR
 let ERC20IMAGE
 let ERC20NAME
-let HARDCODEVIEW// = "receipt"
+let LOADERIMAGE = burnerlogo
+let HARDCODEVIEW// = "loader"// = "receipt"
 
 let mainStyle = {
   width:"100%",
@@ -76,7 +79,7 @@ let titleImage = (
 //<i className="fas fa-fire" />
 if (window.location.hostname.indexOf("localhost") >= 0 || window.location.hostname.indexOf("10.0.0.107") >= 0) {
   XDAI_PROVIDER = "http://localhost:8545"
-  WEB3_PROVIDER = "http://0.0.0.0:8545";
+  WEB3_PROVIDER = "http://localhost:8545";
   CLAIM_RELAY = 'http://localhost:18462'
   if(false){
     ERC20NAME = false
@@ -89,6 +92,7 @@ if (window.location.hostname.indexOf("localhost") >= 0 || window.location.hostna
     ERC20IMAGE = cypherpunk
     XDAI_PROVIDER = "http://localhost:8545"
     WEB3_PROVIDER = "http://localhost:8545";
+    LOADERIMAGE = cypherpunk
   }
 
 }
@@ -96,6 +100,13 @@ else if (window.location.hostname.indexOf("s.xdai.io") >= 0) {
   WEB3_PROVIDER = "https://dai.poa.network";
   CLAIM_RELAY = 'https://x.xdai.io'
   ERC20TOKEN = false//'Burner'
+}
+else if (window.location.hostname.indexOf("wallet.galleass.io") >= 0) {
+  //WEB3_PROVIDER = "https://rinkeby.infura.io/v3/e0ea6e73570246bbb3d4bd042c4b5dac";
+  WEB3_PROVIDER = "http://localhost:8545"
+  //CLAIM_RELAY = 'https://x.xdai.io'
+  ERC20TOKEN = false//'Burner'
+  document.domain = 'galleass.io'
 }
 else if (window.location.hostname.indexOf("qreth") >= 0) {
   WEB3_PROVIDER = "https://mainnet.infura.io/v3/e0ea6e73570246bbb3d4bd042c4b5dac"
@@ -114,6 +125,7 @@ else if (window.location.hostname.indexOf("buffidai") >= 0) {
   ERC20VENDOR = 'VendingMachine'
   ERC20TOKEN = 'ERC20Vendable'
   ERC20IMAGE = bufficorn
+  LOADERIMAGE = bufficorn
 }
 else if (window.location.hostname.indexOf("burnerwallet.io") >= 0) {
   WEB3_PROVIDER = "https://dai.poa.network";
@@ -122,10 +134,11 @@ else if (window.location.hostname.indexOf("burnerwallet.io") >= 0) {
   ERC20VENDOR = 'BurnerVendor'
   ERC20TOKEN = 'Burner'
   ERC20IMAGE = cypherpunk
+  LOADERIMAGE = cypherpunk
 }
 
 
-if(ERC20TOKEN=="BuffiDai"){
+if(ERC20NAME=="BUFF"){
   mainStyle.backgroundImage = "linear-gradient(#540d48, #20012d)"
   mainStyle.backgroundColor = "#20012d"
   mainStyle.mainColor = "#b6299e"
@@ -139,12 +152,12 @@ if(ERC20TOKEN=="BuffiDai"){
       marginTop:-10
     }}/>
   )
-} else if(ERC20TOKEN=="ERC20Vendable"){
+} else if(ERC20NAME=="BURN"){
   mainStyle.backgroundImage = "linear-gradient(#4923d8, #6c0664)"
   mainStyle.backgroundColor = "#6c0664"
   mainStyle.mainColor = "#e72da3"
   mainStyle.mainColorAlt = "#f948b8"
-  title = "Burner Wallet"
+  title = "Burner"
   titleImage = (
     <img src={cypherpunk} style={{
       maxWidth:50,
@@ -159,7 +172,7 @@ if(ERC20TOKEN=="BuffiDai"){
 let innerStyle = {
   maxWidth:740,
   margin:'0 auto',
-  textAlign:'left',
+  textAlign:'left'
 }
 
 let buttonStyle = {
@@ -183,6 +196,8 @@ const invLogoStyle = {
   maxHeight:50,
 }
 
+let metaReceiptTracker = {}
+
 
 const BLOCKS_TO_PARSE_PER_BLOCKTIME = 32
 const MAX_BLOCK_TO_LOOK_BACK = 512//don't look back more than 512 blocks
@@ -198,6 +213,8 @@ let intervalLong
 
 class App extends Component {
   constructor(props) {
+
+
     console.log("[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["+title+"]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]")
     let view = 'main'
     let cachedView = localStorage.getItem("view")
@@ -330,10 +347,14 @@ class App extends Component {
     window.removeEventListener("resize", this.updateDimensions.bind(this));
   }
   async poll() {
-    if(ERC20TOKEN&&this.state.contracts&&this.state.network=="xDai"){
+
+    //console.log(">>>>>>> <<< >>>>>> Looking into iframe...")
+    //console.log(document.getElementById('galleassFrame').contentWindow['web3'])
+
+    if(ERC20TOKEN&&this.state.contracts&&(this.state.network=="xDai"||this.state.network=="Unknown")){
       let gasBalance = await this.state.web3.eth.getBalance(this.state.account)
       gasBalance = this.state.web3.utils.fromWei(""+gasBalance,'ether')
-      //console.log("Getting balanceOf "+this.state.account+" in contract ",this.state.contracts[ERC20TOKEN])
+      console.log("Getting balanceOf "+this.state.account+" in contract ",this.state.contracts[ERC20TOKEN])
       let tokenBalance = await this.state.contracts[ERC20TOKEN].balanceOf(this.state.account).call()
       //console.log("balance is ",tokenBalance)
       tokenBalance = this.state.web3.utils.fromWei(""+tokenBalance,'ether')
@@ -422,16 +443,24 @@ class App extends Component {
   async dealWithPossibleNewPrivateKey(){
     //this happens as page load and you need to wait until
     if(this.state && this.state.hasUpdateOnce){
-      if(!this.state.metaAccount || this.state.balance>=0.05 || this.state.xdaiBalance>=0.05 || this.state.ethBalance>=0.0005 || this.state.daiBalance>=0.05 ){
-        this.setState({possibleNewPrivateKey:false,withdrawFromPrivateKey:this.state.possibleNewPrivateKey},()=>{
-          this.changeView('withdraw_from_private')
-        })
+      if(this.state.metaAccount && this.state.metaAccount.privateKey.replace("0x","") == this.state.possibleNewPrivateKey.replace("0x","")){
+        this.setState({possibleNewPrivateKey:false})
+        this.changeAlert({
+          type: 'warning',
+          message: 'Imported identical private key.',
+        });
       }else{
-        this.setState({possibleNewPrivateKey:false,newPrivateKey:this.state.possibleNewPrivateKey})
-        localStorage.setItem(this.state.account+"loadedBlocksTop","")
-        localStorage.setItem(this.state.account+"recentTxs","")
-        localStorage.setItem(this.state.account+"transactionsByAddress","")
-        this.setState({recentTxs:[],transactionsByAddress:{},fullRecentTxs:[],fullTransactionsByAddress:{}})
+        if(!this.state.metaAccount || this.state.balance>=0.05 || this.state.xdaiBalance>=0.05 || this.state.ethBalance>=0.0005 || this.state.daiBalance>=0.05 ){
+          this.setState({possibleNewPrivateKey:false,withdrawFromPrivateKey:this.state.possibleNewPrivateKey},()=>{
+            this.changeView('withdraw_from_private')
+          })
+        }else{
+          this.setState({possibleNewPrivateKey:false,newPrivateKey:this.state.possibleNewPrivateKey})
+          localStorage.setItem(this.state.account+"loadedBlocksTop","")
+          localStorage.setItem(this.state.account+"recentTxs","")
+          localStorage.setItem(this.state.account+"transactionsByAddress","")
+          this.setState({recentTxs:[],transactionsByAddress:{},fullRecentTxs:[],fullTransactionsByAddress:{}})
+        }
       }
     }else{
       setTimeout(this.dealWithPossibleNewPrivateKey.bind(this),500)
@@ -842,7 +871,10 @@ render() {
   let networkOverlay = ""
   if(web3 && !this.checkNetwork() && view!="exchange"){
     networkOverlay = (
-      <img style={{zIndex:12,position:'absolute',opacity:0.95,right:0,top:0,maxHeight:370}} src={customRPCHint} />
+      <div>
+        <input style={{zIndex:13,position:'absolute',opacity:0.95,right:48,top:192,width:194}} value="https://dai.poa.network" />
+        <img style={{zIndex:12,position:'absolute',opacity:0.95,right:0,top:0,maxHeight:370}} src={customRPCHint} />
+      </div>
     )
   }
 
@@ -920,6 +952,7 @@ render() {
   if(web3){
     header = (
       <Header
+        network={this.state.network}
         total={totalBalance}
         ens={this.state.ens}
         title={this.state.title}
@@ -954,6 +987,7 @@ render() {
             <MoreButtons
               buttonStyle={buttonStyle}
               changeView={this.changeView}
+              isVendor={this.state.isVendor&&this.state.isVendor.isAllowed}
             />
           )
 
@@ -986,6 +1020,7 @@ render() {
                   <MoreButtons
                     buttonStyle={buttonStyle}
                     changeView={this.changeView}
+                    isVendor={false}
                   />
                 </div>
               )
@@ -1008,6 +1043,7 @@ render() {
                   <MoreButtons
                     buttonStyle={buttonStyle}
                     changeView={this.changeView}
+                    isVendor={true}
                   />
                 </div>
               )
@@ -1017,6 +1053,7 @@ render() {
                   <MoreButtons
                     buttonStyle={buttonStyle}
                     changeView={this.changeView}
+                    isVendor={false}
                   />
                 </div>
               )
@@ -1202,6 +1239,7 @@ render() {
 
                   <NavCard title={i18n.t('advance_title')} goBack={this.goBack.bind(this)}/>
                   <Advanced
+                    isVendor={false}
                     buttonStyle={buttonStyle}
                     address={account}
                     balance={balance}
@@ -1360,7 +1398,9 @@ render() {
                   <NavCard title={i18n.t('request_funds_title')} goBack={this.goBack.bind(this)}/>
                   {defaultBalanceDisplay}
                   <RequestFunds
+                    view={this.state.view}
                     mainStyle={mainStyle}
+                    buttonStyle={buttonStyle}
                     balance={balance}
                     address={account}
                     send={send}
@@ -1368,6 +1408,10 @@ render() {
                     changeView={this.changeView}
                     changeAlert={this.changeAlert}
                     dollarDisplay={dollarDisplay}
+                    transactionsByAddress={this.state.transactionsByAddress}
+                    fullTransactionsByAddress={this.state.fullTransactionsByAddress}
+                    fullRecentTxs={this.state.fullRecentTxs}
+                    recentTxs={this.state.recentTxs}
                   />
                 </div>
                 <Bottom
@@ -1386,7 +1430,7 @@ render() {
                 <div>
                   <div className="main-card card w-100" style={{zIndex:1}}>
 
-                    <NavCard title={title} goBack={this.goBack.bind(this)} />
+                    <NavCard title={url} goBack={this.goBack.bind(this)} />
                     <Share
                       title={url}
                       url={url}
@@ -1492,6 +1536,28 @@ render() {
                 />
               </div>
             );
+            case 'cash_out':
+            return (
+              <div>
+                <div className="main-card card w-100" style={{zIndex:1}}>
+
+                  <NavCard title={"Cash Out"} goBack={this.goBack.bind(this)}/>
+                  {defaultBalanceDisplay}
+                  <CashOut
+                    buttonStyle={buttonStyle}
+                    changeView={this.changeView}
+                    address={account}
+                    balance={balance}
+                    goBack={this.goBack.bind(this)}
+                    dollarDisplay={dollarDisplay}
+                  />
+                </div>
+                <Bottom
+                  action={this.goBack.bind(this)}
+                />
+              </div>
+            );
+
             case 'exchange':
             return (
               <div>
@@ -1567,31 +1633,31 @@ render() {
             case 'loader':
             return (
               <div>
-                <div className="main-card card w-100" style={{zIndex:1}}>
+                <div style={{zIndex:1,position:"relative",color:"#dddddd"}}>
 
-                  <NavCard title={"Sending..."} goBack={this.goBack.bind(this)}/>
+                  <NavCard title={"Sending..."} goBack={this.goBack.bind(this)} darkMode={true}/>
                 </div>
-              <Loader mainStyle={mainStyle}/>
+                <Loader loaderImage={LOADERIMAGE} mainStyle={mainStyle}/>
               </div>
             );
             case 'reader':
             return (
               <div>
-                <div className="main-card card w-100" style={{zIndex:1}}>
+                <div style={{zIndex:1,position:"relative",color:"#dddddd"}}>
 
-                  <NavCard title={"Reading QRCode..."} goBack={this.goBack.bind(this)}/>
+                  <NavCard title={"Reading QRCode..."} goBack={this.goBack.bind(this)} darkMode={true}/>
                 </div>
-                <Loader mainStyle={mainStyle}/>
+                <Loader loaderImage={LOADERIMAGE}  mainStyle={mainStyle}/>
               </div>
             );
             case 'claimer':
             return (
               <div>
-                <div className="main-card card w-100" style={{zIndex:1}}>
+                <div style={{zIndex:1,position:"relative",color:"#dddddd"}}>
 
-                  <NavCard title={"Claiming..."} goBack={this.goBack.bind(this)}/>
+                  <NavCard title={"Claiming..."} goBack={this.goBack.bind(this)} darkMode={true}/>
                 </div>
-              <Loader mainStyle={mainStyle}/>
+              <Loader loaderImage={LOADERIMAGE} mainStyle={mainStyle}/>
               </div>
             );
             default:
@@ -1603,7 +1669,7 @@ render() {
         })()}
         { ( false ||  !web3 /*|| !this.checkNetwork() */) &&
           <div>
-            <Loader mainStyle={mainStyle}/>
+            <Loader loaderImage={LOADERIMAGE} mainStyle={mainStyle}/>
           </div>
         }
         { alert && <Footer alert={alert} changeAlert={this.changeAlert}/> }
@@ -1716,6 +1782,10 @@ render() {
   )
 }
 }
+
+//<iframe id="galleassFrame" style={{zIndex:99,position:"absolute",left:0,top:0,width:800,height:600}} src="https://galleass.io" />
+
+
 async function tokenSend(to,value,gasLimit,txData,cb){
   let {account,web3} = this.state
 
@@ -1759,7 +1829,10 @@ async function tokenSend(to,value,gasLimit,txData,cb){
       console.log("SIGNED:",signed)
       this.state.web3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
         console.log("META RECEIPT",receipt)
-        cb(receipt)
+        if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+          metaReceiptTracker[receipt.transactionHash] = true
+          cb(receipt)
+        }
       }).on('error',(error)=>{
         console.log("ERRROROROROROR",error)
         let errorString = error.toString()

@@ -43,6 +43,7 @@ const uniswapContractObject = {
 
 let interval
 let intervalLong
+let metaReceiptTracker = {}
 
 export default class Exchange extends React.Component {
 
@@ -51,7 +52,7 @@ export default class Exchange extends React.Component {
 
     let xdaiweb3 = this.props.xdaiweb3
     //make it easier for local debugging...
-    if(true && window.location.hostname.indexOf("localhost")>=0){
+    if(false && window.location.hostname.indexOf("localhost")>=0){
       console.log("WARNING, USING LOCAL RPC")
       xdaiweb3 = new Web3(new Web3.providers.HttpProvider("http://0.0.0.0:8545"))
     }
@@ -87,8 +88,10 @@ export default class Exchange extends React.Component {
     }
 
     this.state = {
+      extraGasUpDisplay: "",
       daiAddress: daiAddress,
       xdaiAddress: xdaiAddress,
+      xdaiSendToAddress: "",
       wyreBalance: 0,
       denDaiBalance:0,
       mainnetweb3: mainnetweb3,
@@ -105,16 +108,17 @@ export default class Exchange extends React.Component {
       loaderBarColor: "#aaaaaa",
       gwei: 5,
       maxWithdrawlAmount: 0.00,
-      withdrawalExplanation: i18n.t('exchange.withdrawal_explanation')
+      withdrawalExplanation: i18n.t('exchange.withdrawal_explanation'),
+      gettingGas:false
     }
   }
   updateState = (key, value) => {
     this.setState({ [key]: value },()=>{
-      this.setState({ canSendDai: this.canSendDai(), canSendEth: this.canSendEth() })
+      this.setState({ canSendDai: this.canSendDai(), canSendEth: this.canSendEth(), canSendXdai: this.canSendXdai() })
     });
   };
   async componentDidMount(){
-    this.setState({ canSendDai: this.canSendDai(), canSendEth: this.canSendEth() })
+    this.setState({ canSendDai: this.canSendDai(), canSendEth: this.canSendEth(), canSendXdai: this.canSendXdai() })
     interval = setInterval(this.poll.bind(this),1500)
     setTimeout(this.poll.bind(this),250)
   }
@@ -128,6 +132,134 @@ export default class Exchange extends React.Component {
         this.setState({daiBalance})
       }
     }*/
+
+
+    if(this.state.gettingGas){
+      if(this.state.ethBalanceShouldBe){
+        console.log("ethBalanceShouldBe:",parseFloat(this.state.ethBalanceShouldBe)," needs to be less than ",parseFloat(this.props.ethBalance))
+        if(parseFloat(this.state.ethBalanceShouldBe)<parseFloat(this.props.ethBalance)){
+          this.setState({gettingGas:false,ethBalanceShouldBe:false})
+        }
+      }
+    }
+
+    //console.log("checking extraGasUpDisplay",parseFloat(this.props.daiBalance),parseFloat(this.props.ethBalance),parseFloat(this.props.xdaiBalance))
+    if(false || parseFloat(this.props.daiBalance)>0 && parseFloat(this.props.ethBalance)<=0.001 && parseFloat(this.props.xdaiBalance) > 0 ){
+      let getGasText = (
+        <div>
+          ⛽ xDai -> ETH
+        </div>
+      )
+      if(this.state.gettingGas){
+        getGasText = (
+          <div>
+            ⛽ <i className="fas fa-cog fa-spin"></i>
+          </div>
+        )
+      }
+
+
+      let extraGasUpDisplay = (
+        <div style={{padding:10,width:"100%",textAlign:'center',backgroundColor:"#ffdddd"}}>
+          <div style={{padding:10}}>You have DAI but no ETH for gas:</div>
+          <button style={this.props.buttonStyle.secondary}
+            className="btn btn-large"
+            onClick={()=>{
+              if(this.state.gettingGas){
+                this.props.changeAlert({type: 'warning',message: "Already trying to fuel up via xDai->ETH"});
+              }else if(this.props.network!="xDai"&&this.props.network!="Unknown"){
+                this.props.changeAlert({type: 'warning',message: "You must be on the xDai network to fuel xDai->ETH"});
+              }else{
+                this.setState({gettingGas:true,ethBalanceShouldBe:parseFloat(this.props.ethBalance)+0.001})
+                axios.get("https://ethgasstation.info/json/ethgasAPI.json", { crossdomain: true })
+                .catch((err)=>{
+                  console.log("Error getting gas price",err)
+                })
+                .then((response)=>{
+                  if(response && response.data.average>0&&response.data.average<200){
+                    console.log("gas prices",response.data.average)
+                    let gwei = Math.round(response.data.average*100)/1000
+                    console.log("gwei:",gwei)
+                    let AMOUNTNEEDEDFORACOUPLETXS = Math.round(gwei*(1111000000*10) * 201000) // idk maybe enough for a couple transactions?
+
+                    console.log("let's move ",AMOUNTNEEDEDFORACOUPLETXS,"from",this.props.xdaiBalance,"to",this.props.ethBalance)
+
+                    let gasInEth = this.props.web3.utils.fromWei(""+AMOUNTNEEDEDFORACOUPLETXS,'ether')
+                    console.log("gasInEth",gasInEth)
+                    let gasInXDai = Math.floor(this.props.ethprice*gasInEth*100)/100
+
+                    if(gasInXDai>0.5) gasInXDai = 0.5
+                    if(this.props.xdaiBalance < gasInXDai) gasInXDai = this.props.xdaiBalance-0.005
+
+                    console.log("gasInXDai",gasInXDai)
+
+                    let gasEmitterContract = new this.props.web3.eth.Contract(require("../contracts/Emitter.abi.js"),require("../contracts/Emitter.address.js"))
+
+                    let amountInWei = this.props.web3.utils.toWei(""+gasInXDai,'ether')
+
+                    if(this.state.xdaiMetaAccount){
+                      //send funds using metaaccount on mainnet
+
+                      let paramsObject = {
+                        from: this.state.daiAddress,
+                        value: amountInWei,
+                        gas: 120000,
+                        gasPrice: Math.round(1.1 * 1000000000)
+                      }
+                      console.log("====================== >>>>>>>>> paramsObject!!!!!!!",paramsObject)
+
+                      paramsObject.to = gasEmitterContract._address
+                      paramsObject.data = gasEmitterContract.methods.goToETH().encodeABI()
+
+                      console.log("TTTTTTTTTTTTTTTTTTTTTX",paramsObject)
+
+
+                      this.state.xdaiweb3.eth.accounts.signTransaction(paramsObject, this.state.xdaiMetaAccount.privateKey).then(signed => {
+                        console.log("========= >>> SIGNED",signed)
+                          this.state.xdaiweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
+                            console.log("META RECEIPT",receipt)
+                            if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                              metaReceiptTracker[receipt.transactionHash] = true
+                              //actually, let's wait for the eth balance to change
+                              //this.setState({gettingGas:false})
+                            }
+                          }).on('error', (err)=>{
+                            console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                            this.props.changeAlert({type: 'danger',message: err.toString()});
+                            this.setState({gettingGas:false})
+                          }).then(console.log)
+                      });
+
+                    }else{
+                      console.log("Use MetaMask to go xDai to ETH")
+                      this.props.tx(
+                        gasEmitterContract.methods.goToETH()
+                      ,120000,0,amountInWei,(receipt)=>{
+                        if(receipt){
+                          console.log("GAS UP COMPLETE?!?",receipt)
+                          //this.setState({gettingGas:false})
+                          //window.location = "/"+receipt.contractAddress
+                        }
+                      })
+                    }
+                  }
+                })
+              }
+
+
+
+            }}
+          >
+           {getGasText}
+          </button>
+        </div>
+
+      )
+      this.setState({extraGasUpDisplay})
+    }
+
+
+
     if(this.props.ERC20TOKEN&&dendaiContract){
       let denDaiBalance = await dendaiContract.methods.balanceOf(this.state.daiAddress).call()
       denDaiBalance = mainnetweb3.utils.fromWei(denDaiBalance,"ether")
@@ -395,9 +527,13 @@ export default class Exchange extends React.Component {
             console.log("========= >>> SIGNED",signed)
               this.state.mainnetweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
                 console.log("META RECEIPT",receipt)
-                cb(receipt)
+                if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                  metaReceiptTracker[receipt.transactionHash] = true
+                  cb(receipt)
+                }
               }).on('error', (err)=>{
                 console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                this.props.changeAlert({type: 'danger',message: err.toString()});
               }).then(console.log)
           });
 
@@ -428,6 +564,61 @@ export default class Exchange extends React.Component {
       }
     })
   }
+  sendXdai(){
+    if(parseFloat(this.props.xdaiBalance)<parseFloat(this.state.xdaiSendAmount)){
+      this.props.changeAlert({type: 'warning',message: i18n.t('exchange.insufficient_funds')});
+    }else if(!this.state.xdaiSendToAddress || !this.state.xdaiSendToAddress.length === 42){
+      this.props.changeAlert({type: 'warning',message: i18n.t('exchange.invalid_to_address')});
+    }else if(!(parseFloat(this.state.xdaiSendAmount) > 0)){
+      this.props.changeAlert({type: 'warning',message: i18n.t('exchange.invalid_to_amount')});
+    }else{
+      this.setState({
+        xdaiToDendaiMode:"sending",
+        xdaiBalanceAtStart:this.props.xdaiBalance,
+        xdaiBalanceShouldBe:parseFloat(this.props.xdaiBalance)-parseFloat(this.state.xdaiSendAmount),
+        loaderBarColor:"#f5eb4a",
+        loaderBarStatusText: "Sending $"+this.state.xdaiSendAmount+" to "+this.state.xdaiSendToAddress,
+        loaderBarPercent:0,
+        loaderBarStartTime: Date.now(),
+        loaderBarClick:()=>{
+          alert(i18n.t('exchange.go_to_etherscan'))
+        }
+      })
+      this.setState({sendXdai:false})
+      this.props.nativeSend(this.state.xdaiSendToAddress, this.state.xdaiSendAmount, 120000, "", (result) => {
+        if(result && result.transactionHash){
+          this.setState({loaderBarPercent:100,loaderBarStatusText: i18n.t('exchange.funds_transferred'),loaderBarColor:"#62f54a"})
+          setTimeout(()=>{
+            this.setState({
+              xdaiToDendaiMode:false,
+              xdaiSendAmount:"",
+              xdaiSendToAddress:"",
+              loaderBarColor:"#FFFFFF",
+              loaderBarStatusText:"",
+            })
+          },3500)
+
+        }
+      })
+      /*
+      this.transferDai(this.state.daiSendToAddress,this.state.daiSendAmount,"Sending "+this.state.daiSendAmount+" DAI to "+this.state.daiSendToAddress+"...",()=>{
+        this.props.changeAlert({type: 'success',message: "Sent "+this.state.daiSendAmount+" DAI to "+this.state.daiSendToAddress});
+        this.setState({
+          daiToXdaiMode:false,
+          daiSendAmount:"",
+          daiSendToAddress:"",
+          loaderBarColor:"#FFFFFF",
+          loaderBarStatusText:"",
+        })
+      })*/
+
+    }
+  }
+  canSendXdai() {
+    console.log("canSendXdai",this.state.xdaiSendToAddress,this.state.xdaiSendToAddress.length,parseFloat(this.state.xdaiSendAmount),parseFloat(this.props.xdaiBalance))
+    return (this.state.xdaiSendToAddress && this.state.xdaiSendToAddress.length === 42 && parseFloat(this.state.xdaiSendAmount)>0 && parseFloat(this.state.xdaiSendAmount) <= parseFloat(this.props.xdaiBalance))
+  }
+
   sendEth(){
 
     let actualEthSendAmount = parseFloat(this.state.ethSendAmount)/parseFloat(this.props.ethprice)
@@ -508,9 +699,13 @@ export default class Exchange extends React.Component {
             console.log("========= >>> SIGNED",signed)
               this.state.mainnetweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
                 console.log("META RECEIPT",receipt)
-                cb(receipt)
+                if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                  metaReceiptTracker[receipt.transactionHash] = true
+                  cb(receipt)
+                }
               }).on('error', (err)=>{
                 console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                this.props.changeAlert({type: 'danger',message: err.toString()});
               }).then(console.log)
           });
 
@@ -640,7 +835,7 @@ export default class Exchange extends React.Component {
                   <div className="input-group-prepend">
                     <div className="input-group-text">$</div>
                   </div>
-                  <input type="text" className="form-control" placeholder="0.00" value={this.state.amount}
+                  <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.amount}
                          onChange={event => this.updateState('amount', event.target.value)} />
                 </div>
                 </Scaler>
@@ -689,12 +884,15 @@ export default class Exchange extends React.Component {
                       console.log("========= >>> SIGNED",signed)
                         this.state.xdaiweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
                           console.log("META RECEIPT",receipt)
-                          this.setState({
-                            amount:"",
-
-                          })
+                          if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                            metaReceiptTracker[receipt.transactionHash] = true
+                            this.setState({
+                              amount:"",
+                            })
+                          }
                         }).on('error', (err)=>{
                           console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                          this.props.changeAlert({type: 'danger',message: err.toString()});
                         }).then(console.log)
                     });
 
@@ -764,7 +962,7 @@ export default class Exchange extends React.Component {
                     <div className="input-group-prepend">
                       <div className="input-group-text">$</div>
                     </div>
-                    <input type="text" className="form-control" placeholder="0.00" value={this.state.amount}
+                    <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.amount}
                            onChange={event => this.updateState('amount', event.target.value)} />
                   </div>
                   </Scaler>
@@ -813,12 +1011,15 @@ export default class Exchange extends React.Component {
                         console.log("========= >>> SIGNED",signed)
                           this.state.xdaiweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
                             console.log("META RECEIPT",receipt)
-                            this.setState({
-                              amount:"",
-
-                            })
+                            if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                              metaReceiptTracker[receipt.transactionHash] = true
+                              this.setState({
+                                amount:"",
+                              })
+                            }
                           }).on('error', (err)=>{
                             console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                            this.props.changeAlert({type: 'danger',message: err.toString()});
                           }).then(console.log)
                       });
 
@@ -965,7 +1166,7 @@ export default class Exchange extends React.Component {
                 <div className="input-group-prepend">
                   <div className="input-group-text">$</div>
                 </div>
-                <input type="text" className="form-control" placeholder="0.00" value={this.state.amount}
+                <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.amount}
                        onChange={event => this.updateState('amount', event.target.value)} />
                  <div className="input-group-append" onClick={() => {
                     this.setState({amount: Math.floor(this.props.daiBalance*100)/100 })
@@ -1048,7 +1249,7 @@ export default class Exchange extends React.Component {
                 <div className="input-group-prepend">
                   <div className="input-group-text">$</div>
                 </div>
-                <input type="text" className="form-control" placeholder="0.00" value={this.state.amount}
+                <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.amount}
                        onChange={event => this.updateState('amount', event.target.value)} />
                    <div className="input-group-append" onClick={() => {
                       this.setState({amount: Math.floor((this.props.xdaiBalance-0.01)*100)/100 })
@@ -1102,16 +1303,20 @@ export default class Exchange extends React.Component {
                     console.log("========= >>> SIGNED",signed)
                       this.state.xdaiweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
                         console.log("META RECEIPT",receipt)
-                        this.setState({
-                          amount:"",
-                          loaderBarColor:"#4ab3f5",
-                          loaderBarStatusText:"Waiting for bridge...",
-                          loaderBarClick:()=>{
-                            alert(i18n.t('exchange.idk'))
-                          }
-                        })
+                        if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                          metaReceiptTracker[receipt.transactionHash] = true
+                          this.setState({
+                            amount:"",
+                            loaderBarColor:"#4ab3f5",
+                            loaderBarStatusText:"Waiting for bridge...",
+                            loaderBarClick:()=>{
+                              alert(i18n.t('exchange.idk'))
+                            }
+                          })
+                        }
                       }).on('error', (err)=>{
                         console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                        this.props.changeAlert({type: 'danger',message: err.toString()});
                       }).then(console.log)
                   });
 
@@ -1230,7 +1435,7 @@ export default class Exchange extends React.Component {
                 <div className="input-group-prepend">
                   <div className="input-group-text">$</div>
                 </div>
-                <input type="text" className="form-control" placeholder="0.00" value={this.state.amount}
+                <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.amount}
                        onChange={event => this.updateState('amount', event.target.value)} />
                  <div className="input-group-append" onClick={() => {
 
@@ -1304,7 +1509,7 @@ export default class Exchange extends React.Component {
                 let timestamp = currentBlock.timestamp
                 console.log("timestamp",timestamp)
 
-                let deadline = timestamp+300
+                let deadline = timestamp+600
                 let mintokens = output
                 console.log("ethToTokenSwapInput",mintokens,deadline)
 
@@ -1395,7 +1600,7 @@ export default class Exchange extends React.Component {
                 <div className="input-group-prepend">
                   <div className="input-group-text">$</div>
                 </div>
-                <input type="text" className="form-control" placeholder="0.00" value={this.state.amount}
+                <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.amount}
                        onChange={event => this.updateState('amount', event.target.value)} />
                <div className="input-group-append" onClick={() => {
                   this.setState({amount: Math.floor((this.props.daiBalance)*100)/100 })
@@ -1442,7 +1647,7 @@ export default class Exchange extends React.Component {
                 let timestamp = currentBlock.timestamp
                 console.log("timestamp",timestamp)
 
-                let deadline = timestamp+300
+                let deadline = timestamp+600
                 let mineth = output
                 console.log("tokenToEthSwapInput",amountOfDai,mineth,deadline)
 
@@ -1507,47 +1712,49 @@ export default class Exchange extends React.Component {
                           console.log("========= >>> SIGNED",signed)
                             this.state.mainnetweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', async (receipt)=>{
                               console.log("META RECEIPT",receipt)
-                              this.setState({
-                                loaderBarColor:"#4ab3f5",
-                                loaderBarStatusText:"Waiting for 🦄 exchange...",
-                                ethBalanceAtStart:this.props.ethBalance,
-                                ethBalanceShouldBe:eventualEthBalance,
-                              })
+                              if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                                metaReceiptTracker[receipt.transactionHash] = true
+                                this.setState({
+                                  loaderBarColor:"#4ab3f5",
+                                  loaderBarStatusText:"Waiting for 🦄 exchange...",
+                                  ethBalanceAtStart:this.props.ethBalance,
+                                  ethBalanceShouldBe:eventualEthBalance,
+                                })
 
+                                let manualNonce = await this.state.mainnetweb3.eth.getTransactionCount(this.state.daiAddress)
+                                console.log("manually grabbed nonce as ",manualNonce)
+                                paramsObject = {
+                                  nonce: manualNonce,
+                                  from: this.state.daiAddress,
+                                  value: 0,
+                                  gas: 240000,
+                                  gasPrice: Math.round(gwei * 1000000000)
+                                }
+                                console.log("====================== >>>>>>>>> paramsObject!!!!!!!",paramsObject)
 
+                                paramsObject.to = uniswapContract._address
+                                paramsObject.data = uniswapContract.methods.tokenToEthSwapInput(""+amountOfDai,""+mineth,""+deadline).encodeABI()
 
-                              let manualNonce = await this.state.mainnetweb3.eth.getTransactionCount(this.state.daiAddress)
-                              console.log("manually grabbed nonce as ",manualNonce)
-                              paramsObject = {
-                                nonce: manualNonce,
-                                from: this.state.daiAddress,
-                                value: 0,
-                                gas: 240000,
-                                gasPrice: Math.round(gwei * 1000000000)
+                                console.log("TTTTTTTTTTTTTTTTTTTTTX",paramsObject)
+
+                                this.state.mainnetweb3.eth.accounts.signTransaction(paramsObject, this.state.mainnetMetaAccount.privateKey).then(signed => {
+                                  console.log("========= >>> SIGNED",signed)
+                                    this.state.mainnetweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
+                                      console.log("META RECEIPT",receipt)
+                                      if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                                        metaReceiptTracker[receipt.transactionHash] = true
+                                        this.setState({
+                                          amount:"",
+                                        })
+                                      }
+                                    }).on('error', (err)=>{
+                                      console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                                      this.props.changeAlert({type: 'danger',message: err.toString()});
+                                    }).then(console.log)
+                                });
                               }
-                              console.log("====================== >>>>>>>>> paramsObject!!!!!!!",paramsObject)
-
-                              paramsObject.to = uniswapContract._address
-                              paramsObject.data = uniswapContract.methods.tokenToEthSwapInput(""+amountOfDai,""+mineth,""+deadline).encodeABI()
-
-                              console.log("TTTTTTTTTTTTTTTTTTTTTX",paramsObject)
-
-                              this.state.mainnetweb3.eth.accounts.signTransaction(paramsObject, this.state.mainnetMetaAccount.privateKey).then(signed => {
-                                console.log("========= >>> SIGNED",signed)
-                                  this.state.mainnetweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
-                                    console.log("META RECEIPT",receipt)
-                                    this.setState({
-                                      amount:"",
-
-                                    })
-                                  }).on('error', (err)=>{
-                                    console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
-                                  }).then(console.log)
-                              });
-
-
-
                             }).on('error', (err)=>{
+                              this.props.changeAlert({type: 'danger',message: err.toString()});
                               console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
                             }).then(console.log)
                         });
@@ -1577,13 +1784,16 @@ export default class Exchange extends React.Component {
                           console.log("========= >>> SIGNED",signed)
                             this.state.mainnetweb3.eth.sendSignedTransaction(signed.rawTransaction).on('receipt', (receipt)=>{
                               console.log("META RECEIPT",receipt)
-                              this.setState({
-                                amount:"",
-                                loaderBarColor:"#4ab3f5",
-
-                              })
+                              if(receipt&&receipt.transactionHash&&!metaReceiptTracker[receipt.transactionHash]){
+                                metaReceiptTracker[receipt.transactionHash] = true
+                                this.setState({
+                                  amount:"",
+                                  loaderBarColor:"#4ab3f5",
+                                })
+                              }
                             }).on('error', (err)=>{
                               console.log("EEEERRRRRRRROOOOORRRRR ======== >>>>>",err)
+                              this.props.changeAlert({type: 'danger',message: err.toString()});
                             }).then(console.log)
                         });
 
@@ -1720,6 +1930,8 @@ export default class Exchange extends React.Component {
     }
 
 
+
+
     let sendDaiButton = (
       <button className="btn btn-large w-100" style={this.props.buttonStyle.secondary} disabled={buttonsDisabled} onClick={()=>{
         this.setState({sendDai:true})
@@ -1748,7 +1960,7 @@ export default class Exchange extends React.Component {
               <div className="input-group-prepend">
                 <div className="input-group-text">$</div>
               </div>
-              <input type="text" className="form-control" placeholder="0.00" value={this.state.daiSendAmount}
+              <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.daiSendAmount}
                      onChange={event => this.updateState('daiSendAmount', event.target.value)} />
                <div className="input-group-append" onClick={() => {
                   this.setState({daiSendAmount: Math.floor((this.props.daiBalance)*100)/100 })
@@ -1809,7 +2021,7 @@ export default class Exchange extends React.Component {
               <div className="input-group-prepend">
                 <div className="input-group-text">$</div>
               </div>
-              <input type="text" className="form-control" placeholder="0.00" value={this.state.ethSendAmount}
+              <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.ethSendAmount}
                      onChange={event => this.updateState('ethSendAmount', event.target.value)} />
                      <div className="input-group-append" onClick={() => {
 
@@ -1866,9 +2078,74 @@ export default class Exchange extends React.Component {
       )
     }
 
+    let sendXdaiButton
+
+    if(this.props.ERC20TOKEN){
+      sendXdaiButton = (
+        <button className="btn btn-large w-100" disabled={buttonsDisabled} style={this.props.buttonStyle.secondary} onClick={()=>{this.setState({sendXdai:true})}}>
+          <Scaler config={{startZoomAt:400,origin:"50% 50%"}}>
+            <i className="fas fa-arrow-right"></i>
+          </Scaler>
+        </button>
+      )
+    }else{
+      sendXdaiButton = (
+        <button className="btn btn-large w-100" disabled={buttonsDisabled} style={this.props.buttonStyle.secondary} onClick={this.props.goBack}>
+          <Scaler config={{startZoomAt:400,origin:"50% 50%"}}>
+            <i className="fas fa-arrow-right"></i>
+          </Scaler>
+        </button>
+      )
+    }
+
+    let sendXdaiRow = ""
+    if(this.state.sendXdai){
+      sendXdaiRow = (
+        <div className="send-to-address card w-100" style={{marginTop:20}}>
+        <div className="content ops row">
+          <div className="form-group w-100">
+            <div className="form-group w-100">
+              <label htmlFor="amount_input">To Address</label>
+              <input type="text" className="form-control" placeholder="0x..." value={this.state.xdaiSendToAddress}
+                     onChange={event => this.updateState('xdaiSendToAddress', event.target.value)} />
+            </div>
+            <div>  { this.state.xdaiSendToAddress && this.state.xdaiSendToAddress.length==42 && <Blockies seed={this.state.xdaiSendToAddress.toLowerCase()} scale={10} /> }</div>
+            <label htmlFor="amount_input">Send Amount</label>
+            <div className="input-group">
+              <div className="input-group-prepend">
+                <div className="input-group-text">$</div>
+              </div>
+              <input type="number" step="0.1" className="form-control" placeholder="0.00" value={this.state.xdaiSendAmount}
+                     onChange={event => this.updateState('xdaiSendAmount', event.target.value)} />
+                     <div className="input-group-append" onClick={() => {
+                           this.setState({xdaiSendAmount: Math.floor((this.props.xdaiBalance-0.01)*100)/100 })
+                         }
+                       }>
+                       <span className="input-group-text" id="basic-addon2" style={this.props.buttonStyle.secondary}>
+                         max
+                       </span>
+                     </div>
+            </div>
+            <button style={this.props.buttonStyle.primary} disabled={buttonsDisabled} className={`btn btn-success btn-lg w-100 ${this.state.canSendXdai ? '' : 'disabled'}`}
+                    onClick={this.sendXdai.bind(this)}>
+              Send
+            </button>
+          </div>
+        </div>
+        </div>
+      )
+      sendXdaiButton = (
+        <button className="btn btn-large w-100" style={{backgroundColor:"#888888",whiteSpace:"nowrap"}} onClick={()=>{
+          this.setState({sendXdai:false})
+        }}>
+          <Scaler config={{startZoomAt:400,origin:"50% 50%"}}>
+            <i className="fas fa-times"></i>
+          </Scaler>
+        </button>
+      )
+    }
 
     //console.log("eth price ",this.props.ethBalance,this.props.ethprice)
-
     return (
       <div style={{marginTop:30}}>
 
@@ -1888,14 +2165,11 @@ export default class Exchange extends React.Component {
                 </Scaler>
             </div>
             <div className="col-2 p-1" style={{marginTop:8}}>
-              <button className="btn btn-large w-100" disabled={buttonsDisabled} style={this.props.buttonStyle.secondary} onClick={this.props.goBack}>
-                <Scaler config={{startZoomAt:400,origin:"50% 50%"}}>
-                  <i className="fas fa-arrow-right"></i>
-                </Scaler>
-              </button>
+              {sendXdaiButton}
             </div>
 
           </div>
+          {sendXdaiRow}
 
         <div className="main-card card w-100">
           {daiToXdaiDisplay}
@@ -1944,16 +2218,7 @@ export default class Exchange extends React.Component {
             </div>
           </div>
           {sendEthRow}
-
-
-
-
-
-
-
-
-
-
+          {this.state.extraGasUpDisplay}
 
       </div>
     )
